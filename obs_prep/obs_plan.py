@@ -78,7 +78,7 @@ class SkyField(object):
     def check_field(self, axes=None, project=False, c='k'):
 
         if axes is None:
-            fig = plt.figure(figsize=(8, 6))
+            fig = plt.figure(figsize=(10, 6))
             ax  = fig.add_axes([0.1, 0.1, 0.85, 0.85])
         else:
             fig, ax = axes
@@ -94,7 +94,7 @@ class SkyField(object):
             edg_ra  *= np.cos(edg_dec * np.pi / 180.)
             edg_dec -= self.dec.to(u.deg).value
 
-        ax.plot(edg_ra, edg_dec, c + '-', linewidth=2.5, zorder=100)
+        ax.plot(edg_ra, edg_dec, c + '-', linewidth=1.5, zorder=100)
 
         ax.set_aspect('equal')
         if axes is None:
@@ -335,12 +335,13 @@ class DriftScan(ScaningStrategy):
             blocktime = [blocktime, blocktime]
         self._block_time = self.align_with_obsdate(blocktime)
 
-    def generate_altaz(self, location=None):
+    def generate_altaz(self, location=None, shift=0):
 
         pass
 
     def check_scans(self, axes=None, project=False, day_select=None, 
-            ra_range=[None, None], dec_range=[None, None], zero_center=False):
+            ra_range=[None, None], dec_range=[None, None], zero_center=False,
+            combine_plot=True):
 
         _location = self.obs_location
         obs_date = np.arange(len(self.obs_date))
@@ -351,6 +352,7 @@ class DriftScan(ScaningStrategy):
 
         for ff, target_field in enumerate(self.target_field):
             fig, ax = target_field.check_field(axes=axes, project=project)
+            if combine_plot: axes = (fig, ax)
             dd = 0
             for ii in obs_date:
                 for jj in range(2):
@@ -390,8 +392,8 @@ class DriftScan(ScaningStrategy):
             if axes is None:
                 plt.show()
 
-    def check_hitmap(self, axes=None, day_select=None, 
-            ra_range=[None, None], dec_range=[None, None], pad=(3, 1)):
+    def check_hitmap(self, axes=None, day_select=None, pad=(3, 1), 
+            zero_center=False, combine_plot=True, edges=None):
 
         project=False
 
@@ -402,13 +404,22 @@ class DriftScan(ScaningStrategy):
 
         _c = ['r', 'b']
 
+        hitmap = None
         for ff, target_field in enumerate(self.target_field):
             fig, ax = target_field.check_field(axes=axes, project=project)
+            if combine_plot: axes = (fig, ax)
             pixsize = 0.3
-            ra_min  = target_field.ra_min.value
-            ra_max  = target_field.ra_max.value
-            dec_min = target_field.dec_min.value
-            dec_max = target_field.dec_max.value
+            if edges is None:
+                ra_min  = target_field.ra_min.value
+                ra_max  = target_field.ra_max.value
+                dec_min = target_field.dec_min.value
+                dec_max = target_field.dec_max.value
+            else:
+                ra_min, ra_max, dec_min, dec_max = edges
+
+            ra_range  = [ra_min, ra_max]
+            dec_range = [dec_min, dec_max]
+
             ra_bins_e  = np.arange(ra_min - pad[0] - 0.5*pixsize, 
                                    ra_max + pad[0] + pixsize, 
                                    pixsize)
@@ -417,7 +428,9 @@ class DriftScan(ScaningStrategy):
                                    pixsize)
             ra_bins  = ra_bins_e[:-1] + 0.5*pixsize
             dec_bins = dec_bins_e[:-1] + 0.5*pixsize
-            hitmap = np.zeros(ra_bins.shape + dec_bins.shape)
+            #if (not combine_plot) or (hitmap is None):
+            if hitmap is None:
+                hitmap = np.zeros(ra_bins.shape + dec_bins.shape)
             dd = 0
             for ii in obs_date:
                 for jj in range(2):
@@ -431,21 +444,34 @@ class DriftScan(ScaningStrategy):
 
                     ra  = pp.ra.deg
                     dec = pp.dec.deg
+                    if zero_center:
+                        ra[ra>180] -= 360.
 
                     hitmap += np.histogram2d(ra, dec, bins=[ra_bins_e, dec_bins_e])[0]
 
                     dd += 1
 
+            if not combine_plot:
+                hitmap = np.ma.masked_equal(hitmap, 0)
+                vmin = 0
+                vmax = hitmap.max() * 1.5
+                ax.pcolormesh(ra_bins_e, dec_bins_e, hitmap.T, 
+                        vmin=vmin, vmax=vmax, cmap='Blues')
+
+                ax.set_xlim(tuple(ra_range))
+                ax.set_ylim(tuple(dec_range))
+            if axes is None:
+                plt.show()
+
+        if combine_plot:
             hitmap = np.ma.masked_equal(hitmap, 0)
             vmin = 0
-            vmax = hitmap.max() * 1.5
+            vmax = hitmap.max() * 1.1
             ax.pcolormesh(ra_bins_e, dec_bins_e, hitmap.T, 
                     vmin=vmin, vmax=vmax, cmap='Blues')
 
             ax.set_xlim(tuple(ra_range))
             ax.set_ylim(tuple(dec_range))
-            if axes is None:
-                plt.show()
 
 class HorizonRasterDrift(DriftScan):
 
@@ -459,7 +485,7 @@ class HorizonRasterDrift(DriftScan):
             az_range = [az_range, az_range]
         self._az_raster_range = self.align_with_obsdate(az_range)
 
-    def generate_altaz(self, location=None):
+    def generate_altaz(self, location=None, shift=0.):
 
         obs_speed    = self.scaning_speed 
         obs_int      = self.dumping_rate 
@@ -509,6 +535,8 @@ class HorizonRasterDrift(DriftScan):
                     _az_list = np.append(_az_list, _az_list[::-1] + 1)
                     _az_list = _az_list * _az_space
                     _az_list += az_start
+                    if jj == 0: _az_list -= shift * u.deg
+                    elif jj == 1: _az_list += shift * u.deg
                     _az_list = _az_list.value
                     _az_list = [_az_list[i%int(2.*_one_way_npoints)] 
                             for i in range(obs_len)]
@@ -549,9 +577,9 @@ class MeerKATHRD(ObservationSchedule, HorizonRasterDrift):
         meerKAT_Lat = -(30. + 42./60. + 47.41/3600.) * u.deg #
         self.obs_location = [meerKAT_Lon, meerKAT_Lat]
 
-    def generate_altaz(self):
+    def generate_altaz(self, shift=0):
 
-        super(MeerKATHRD, self).generate_altaz(self.obs_location)
+        super(MeerKATHRD, self).generate_altaz(self.obs_location, shift=shift)
 
     def get_schedule(self):
 
