@@ -404,6 +404,18 @@ class DriftScan(ScaningStrategy):
 
         _c = ['r', 'b']
 
+        pointing_total = 0
+        pointing_field = 0
+
+        def _in_field_f(ra, dec):
+            _in_field = np.zeros(ra.shape).astype('bool')
+            for target_field in self.target_field:
+                _in_field += (ra  > target_field.ra_min.value) \
+                           * (ra  < target_field.ra_max.value) \
+                           * (dec > target_field.dec_min.value)\
+                           * (dec < target_field.dec_max.value)
+            return _in_field
+
         hitmap = None
         for ff, target_field in enumerate(self.target_field):
             fig, ax = target_field.check_field(axes=axes, project=project)
@@ -447,6 +459,11 @@ class DriftScan(ScaningStrategy):
                     if zero_center:
                         ra[ra>180] -= 360.
 
+                    pointing_total += ra.shape[0]
+                    _in_field = _in_field_f(ra, dec)
+                    pointing_field += np.sum(_in_field.astype('int'))
+                    #print pointing_total, pointing_field
+
                     hitmap += np.histogram2d(ra, dec, bins=[ra_bins_e, dec_bins_e])[0]
 
                     dd += 1
@@ -472,6 +489,12 @@ class DriftScan(ScaningStrategy):
 
             ax.set_xlim(tuple(ra_range))
             ax.set_ylim(tuple(dec_range))
+
+            int_time = self.dumping_rate
+            print pointing_total * int_time, pointing_field * int_time
+            p = (pointing_field * int_time) / (pointing_total * int_time)
+            tt = r"$%4.2f "%(p*100) + "\\%$ pointings in field"
+            ax.text(0.03, 0.1, tt, transform=ax.transAxes)
 
 class HorizonRasterDrift(DriftScan):
 
