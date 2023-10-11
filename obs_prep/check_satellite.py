@@ -43,12 +43,12 @@ def get_sat_tles(sattype='geo', reload=False, source_url=None):
     if source_url is None:
         source_url = 'https://www.celestrak.com/NORAD/elements/'
     #active = get_active_tles(source_url=source_url)
-    print 'load sat catalogue from %s %s.txt'%(source_url, sattype)
+    print('load sat catalogue from %s %s.txt'%(source_url, sattype))
     LbandSats = [sattype + '.txt', ]
     sats = {}
     for i in range(len(LbandSats)):
         _sats = load.tle(source_url+LbandSats[i], reload=reload)
-        for xx in _sats.keys():
+        for xx in list(_sats.keys()):
             if not isinstance(xx, int): # and xx in active.keys():
                 sats[xx] = _sats[xx]
 
@@ -61,7 +61,7 @@ def get_active_tles(source_url=None):
 
     sats = {}
     _sats = load.tle(source_url + 'active.txt', reload=False)
-    for xx in _sats.keys(): 
+    for xx in list(_sats.keys()): 
         if not isinstance(xx, int):
             sats[xx] = _sats[xx]
     return sats
@@ -91,7 +91,7 @@ def get_sat_coods(sats, obs_time_list, obs_location):
 
     pool =  Pool(16)
     r = pool.map(partial(__get_sat_coord__, sats=sats, 
-            obs_time=obs_time, obs_location=obs_location), sats.keys())
+            obs_time=obs_time, obs_location=obs_location), list(sats.keys()))
     for _r in r:
         coords.append(_r[0][0])
         name.append(_r[1])
@@ -114,7 +114,7 @@ def remove_sats_below_horizen(sats, st_time, ed_time, location):
     obs_time = st_time.datetime.timetuple()
     obs_time = load.timescale(builtin=True).utc(*obs_time[:5] + (time_range, ))
 
-    for key in sats.keys():
+    for key in list(sats.keys()):
         satellite = sats[key]
         topcentric = (satellite - location).at(obs_time)
         alt, az, distance = topcentric.altaz()
@@ -214,21 +214,21 @@ class Satellite_Catalogue(object):
             coord_list = []
             name_list  = []
 
-            print "Time range %s - %s"%(obs_time_list[0].utc, obs_time_list[-1].utc)
+            print("Time range %s - %s"%(obs_time_list[0].utc, obs_time_list[-1].utc))
             for ii, sat_type in enumerate(self.sats_type):
                 t0 = time.time()
                 sats = copy.copy(self.sats[ii])
                 #if sat_type == 'geo':
                 #    sats = remove_sats_below_horizen(sats, obs_time_list[0], 
                 #            obs_time_list[-1], self.obs_location)
-                print "Satellite %12s has %4d satellites"%(sat_type, 
-                                                         len(sats.keys())),
+                print("Satellite %12s has %4d satellites"%(sat_type, 
+                                                         len(list(sats.keys()))), end=' ')
                 
                 coord_list_sats, name_list_sats\
                         = get_sat_coods(sats, obs_time_list, self.obs_location)
                 coord_list.append(coord_list_sats)
                 name_list.append(name_list_sats)
-                print " [use %6.2f s]"%(time.time() - t0)
+                print(" [use %6.2f s]"%(time.time() - t0))
             coord_list_total.append(coord_list)
             name_list_total.append(name_list)
 

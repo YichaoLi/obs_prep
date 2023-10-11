@@ -305,6 +305,11 @@ class DriftScan(ScaningStrategy):
         self.start_az_list   = None
         self.start_alt_list  = None
 
+        self._field_ra_min = None
+        self._field_ra_max = None
+        self._field_dec_min = None
+        self._field_dec_max = None
+
     @property
     def scaning_speed(self):
         return self._scaning_speed
@@ -349,6 +354,7 @@ class DriftScan(ScaningStrategy):
             obs_date = obs_date[slice(*day_select)]
 
         _c = ['r', 'b']
+        _o = ['R', 'S']
 
         for ff, target_field in enumerate(self.target_field):
             fig, ax = target_field.check_field(axes=axes, project=project)
@@ -377,6 +383,18 @@ class DriftScan(ScaningStrategy):
                     ax.plot(ra, dec, _c[jj]+'.-', ms=1., mfc='none', linewidth=0.5)
                     ax.plot(ra[0], dec[0], 'go')
                     ax.text(ra[0], dec[0] - 0.2, '%d'%dd)
+
+                    n1 = self.one_way_npoints[ff, ii, jj]
+                    if len(ra)%(2 * n1) == 0: n2 = -1
+                    else: n2 = -n1
+                    print("%s %s Alt:%4.1f \t RA: %7.2f %7.2f; \tDEC: %7.2f %7.2f"%(
+                        target_field.name, _o[jj], _alt[0].value,
+                        ra[n1], ra[n2], dec[n1], dec[n2]) )
+                    ax.plot([ra[ n1], ra[ n2], ra[ n2], ra[ n1], ra[ n1]], 
+                            [dec[n1], dec[n1], dec[n2], dec[n2], dec[n1]], 
+                            _c[jj] + '--', lw=2.5)
+                    #ax.plot(ra[-_n], dec[-_n], _c[jj] + 'o')
+
                     dd += 1
             for _radec in self.observed_radec:
                 ra  = _radec[:, 0].copy()
@@ -491,7 +509,7 @@ class DriftScan(ScaningStrategy):
             ax.set_ylim(tuple(dec_range))
 
             int_time = self.dumping_rate
-            print pointing_total * int_time, pointing_field * int_time
+            print(pointing_total * int_time, pointing_field * int_time)
             p = (pointing_field * int_time) / (pointing_total * int_time)
             tt = r"$%4.2f "%(p*100) + "\\%$ pointings in field"
             ax.text(0.03, 0.1, tt, transform=ax.transAxes)
@@ -508,7 +526,7 @@ class HorizonRasterDrift(DriftScan):
             az_range = [az_range, az_range]
         self._az_raster_range = self.align_with_obsdate(az_range)
 
-    def generate_altaz(self, location=None, shift=0.):
+    def generate_altaz(self, location=None, shift=0., t_delay=True):
 
         obs_speed    = self.scaning_speed 
         obs_int      = self.dumping_rate 
@@ -528,6 +546,7 @@ class HorizonRasterDrift(DriftScan):
         #t_delay_pd = (np.arange(ndays) - 0.5 * (ndays - 1)) * t_delay_pd
 
 
+        self.one_way_npoints = []
         for ff in range(nfields):
             alt_list = []
             az_list  = []
@@ -538,22 +557,29 @@ class HorizonRasterDrift(DriftScan):
                 day_t_list   = []
                 for jj in range(2):
                     _obs_speed = obs_speed[ii][jj]
-                    t_delay_pd  = (obs_az_range[ii][jj] * 2. / _obs_speed).decompose()
-                    t_delay_pd /= float(ndays)
-                    t_delay_pd  = (ii - 0.5 * (ndays - 1)) * t_delay_pd
+                    if t_delay:
+                        t_delay_pd  = (obs_az_range[ii][jj] * 2. / _obs_speed).decompose()
+                        t_delay_pd /= float(ndays)
+                        t_delay_pd  = (ii - 0.5 * (ndays - 1)) * t_delay_pd
+                    else:
+                        t_delay_pd = 0.
                     starttime = start_time_list[ff][ii][jj] + t_delay_pd
                     alt_start = start_alt_list[ff][ii][jj]
                     az_start  = start_az_list[ff][ii][jj]
 
-                    obs_len   = int((block_time[ii][jj] / obs_int).decompose().value)
-
-                    _alt_list = (np.ones(obs_len) * alt_start).value
-
-                    day_alt_list.append(np.array(_alt_list) * u.deg)
-
                     _az_space = (_obs_speed * obs_int).to(u.deg)
                     _one_way_npoints = \
-                            (obs_az_range[ii][jj] / _obs_speed / obs_int).decompose()
+                            int((obs_az_range[ii][jj] / _obs_speed / obs_int).decompose())
+                    self.one_way_npoints.append(_one_way_npoints)
+
+
+                    obs_len   = int((block_time[ii][jj] / obs_int).decompose().value)
+                    n_obs_len = int(obs_len / _one_way_npoints)
+                    obs_len   = _one_way_npoints * (n_obs_len + 1)
+                    _alt_list = (np.ones(obs_len) * alt_start).value
+                    day_alt_list.append(np.array(_alt_list) * u.deg)
+
+
                     _az_list = np.arange(_one_way_npoints)
                     _az_list = np.append(_az_list, _az_list[::-1] + 1)
                     _az_list = _az_list * _az_space
@@ -579,6 +605,10 @@ class HorizonRasterDrift(DriftScan):
             self.az_list.append(az_list)
             self.t_list.append(t_list)
 
+        self.one_way_npoints = np.array(self.one_way_npoints)
+        self.one_way_npoints.shape = (nfields, ndays, 2)
+        
+
         #self.alt_list = np.concatenate(alt_list) * u.deg
         #self.az_list  = np.concatenate(az_list) * u.deg
         #self.t_list   = Time(np.concatenate(t_list))
@@ -600,9 +630,9 @@ class MeerKATHRD(ObservationSchedule, HorizonRasterDrift):
         meerKAT_Lat = -(30. + 42./60. + 47.41/3600.) * u.deg #
         self.obs_location = [meerKAT_Lon, meerKAT_Lat]
 
-    def generate_altaz(self, shift=0):
+    def generate_altaz(self, shift=0, t_delay=True):
 
-        super(MeerKATHRD, self).generate_altaz(self.obs_location, shift=shift)
+        super(MeerKATHRD, self).generate_altaz(self.obs_location, shift=shift, t_delay=t_delay)
 
     def get_schedule(self):
 
@@ -1117,8 +1147,8 @@ def plot_sch_oneday(obstime_list, location, field_list, ax, obs_alt=None, cal_li
     altaz_frame = AltAz(obstime=obstime_list, location=location)
 
     obs = Observer(location=location)
-    print 'Sun rise time: %s'%(Time(obs.sun_rise_time(obstime_list[-1])).fits)
-    print 'Sun set time: %s'%(Time(obs.sun_set_time(obstime_list[0])).fits)
+    print('Sun rise time: %s'%(Time(obs.sun_rise_time(obstime_list[-1])).fits))
+    print('Sun set time: %s'%(Time(obs.sun_set_time(obstime_list[0])).fits))
 
     day = obstime_list[0]
     day.out_subfmt = 'date'
@@ -1147,10 +1177,10 @@ def plot_sch_oneday(obstime_list, location, field_list, ax, obs_alt=None, cal_li
             sun_sep  = cal_altaz.separation(sun_altaz).to(u.deg).value
             moon_sep = cal_altaz.separation(moon_altaz).to(u.deg).value
 
-            print 'Cal. %s moon sep: %5.2f-%5.2f deg; sun sep %5.2f-%5.2f deg.'%(
+            print('Cal. %s moon sep: %5.2f-%5.2f deg; sun sep %5.2f-%5.2f deg.'%(
                     cal.name, moon_sep.min(), moon_sep.max(), 
-                    sun_sep.min(), sun_sep.max())
-    print '-'*10
+                    sun_sep.min(), sun_sep.max()))
+    print('-'*10)
 
 
     for ff, field in enumerate(field_list):
@@ -1234,7 +1264,7 @@ def _get_risingtime_at_alt(obstime, location, alt, target, return_idx=False):
     target  : [ra, dec] of the target, in deg 
     '''
 
-    idx = range(len(obstime))
+    idx = list(range(len(obstime)))
     altaz_frame = AltAz(obstime=obstime, location=location)
     if return_idx: obstime=idx
 
@@ -1271,21 +1301,21 @@ def _get_risingtime_at_alt(obstime, location, alt, target, return_idx=False):
 def make_obs(obs_az_range, obs_speed, obs_int, obs_schedul, field,
         location=None, az_inverse=False, cal=None):
     
-    print '='*70
+    print('='*70)
 
-    print
-    print "# Log.Lat.   %12.7f %12.7f" % (location.lon.deg, location.lat.deg)
+    print()
+    print("# Log.Lat.   %12.7f %12.7f" % (location.lon.deg, location.lat.deg))
     #print "# AZRange    %10.5f deg"%(obs_az_range.to(u.deg).value)
     
-    print "# Field  %10s"%field.name
-    print "# AZRange    %10.5f deg"%(obs_az_range.to(u.deg).value)
-    print "# ScanSpeed  %10.5f arcmin / s"%(obs_speed.to(u.arcmin/u.second).value)
-    print "# Int.Time   %10.5f s"%(obs_int.to(u.second).value)
-    print "# SlewTime   %10.5f s"%((obs_az_range/obs_speed).to(u.second).value)
+    print("# Field  %10s"%field.name)
+    print("# AZRange    %10.5f deg"%(obs_az_range.to(u.deg).value))
+    print("# ScanSpeed  %10.5f arcmin / s"%(obs_speed.to(u.arcmin/u.second).value))
+    print("# Int.Time   %10.5f s"%(obs_int.to(u.second).value))
+    print("# SlewTime   %10.5f s"%((obs_az_range/obs_speed).to(u.second).value))
     #print '-'*70
-    print
+    print()
 
-    for key in wgz_field.keys():
+    for key in list(wgz_field.keys()):
         #fig = plt.figure(figsize=(10, 4))
         #ax  = fig.add_axes([0.1, 0.1, 0.8, 0.8])
 
@@ -1327,7 +1357,7 @@ def make_obs(obs_az_range, obs_speed, obs_int, obs_schedul, field,
 
                 obs_len = (obs_tot / obs_int).decompose()
                 #_t_list = np.arange(obs_len) - 0.5 * obs_len
-                _t_list = range(obs_len) - 0.5 * obs_len
+                _t_list = list(range(obs_len)) - 0.5 * obs_len
                 _t_list *= obs_int
                 _t_list += _t
 
@@ -1374,31 +1404,31 @@ def make_obs(obs_az_range, obs_speed, obs_int, obs_schedul, field,
                     cal_time   = obs_schedul[key][status+'_cal_time'] * u.min
 
                 ahead_time = (syst_setup + cal_moving + cal_time).to(u.min)
-                print '-' * 60
-                print "\tSuggest start time (%3.1f min ahead)"%(
-                        ahead_time.value)
-                print "\t%s [LST: %10.8f]"%(_t_list[0] - ahead_time, 
-                (_t_list[0] - ahead_time).sidereal_time('apparent').value)
-                print "\t   system setup time %f min \n"%syst_setup.to(u.min).value +\
+                print('-' * 60)
+                print("\tSuggest start time (%3.1f min ahead)"%(
+                        ahead_time.value))
+                print("\t%s [LST: %10.8f]"%(_t_list[0] - ahead_time, 
+                (_t_list[0] - ahead_time).sidereal_time('apparent').value))
+                print("\t   system setup time %f min \n"%syst_setup.to(u.min).value +\
                       "\t  +calibration time  %f min \n"%cal_time.to(u.min).value +\
-                      "\t  +moving from cal   %f min \n"%cal_moving.to(u.min).value
+                      "\t  +moving from cal   %f min \n"%cal_moving.to(u.min).value)
                     
                 if cal is not None:
-                    print
-                    print "C\t%s [RA Dec: %10.8f, %10.8f]"%(cal_key,
-                                cal_coord.ra.deg, cal_coord.dec.deg)
-                    print " \t%s [AZ Alt: %10.8f, %10.8f]"%(cal_key, cal_az, cal_alt)
-                    print "\tStart point Sep. %10.8f "%(sep_wgzmin.deg)
-                    print "\tMoon Sep. %10.8f [RA: %10.8f Dec: %10.8f]"%(sep_moon.deg,
-                            moon_radec.ra.deg, moon_radec.dec.deg)
-                print
-                print "%s\t%s [LST: %10.8f] start"%(status, _t_list[0],
-                                    _t_list[0].sidereal_time('apparent').value)
-                print "\tAZ Alt: %10.8f, %10.8f"%(_az_0, _alt.value)
-                print "\tt_tot: %8.2f s [%8.2f min]"%(obs_tot.to(u.second).value,
-                        obs_tot.to(u.min).value)
-                print "\t%s [LST: %10.8f] finish"%(_t_list[-1],
-                                    _t_list[-1].sidereal_time('apparent').value)
+                    print()
+                    print("C\t%s [RA Dec: %10.8f, %10.8f]"%(cal_key,
+                                cal_coord.ra.deg, cal_coord.dec.deg))
+                    print(" \t%s [AZ Alt: %10.8f, %10.8f]"%(cal_key, cal_az, cal_alt))
+                    print("\tStart point Sep. %10.8f "%(sep_wgzmin.deg))
+                    print("\tMoon Sep. %10.8f [RA: %10.8f Dec: %10.8f]"%(sep_moon.deg,
+                            moon_radec.ra.deg, moon_radec.dec.deg))
+                print()
+                print("%s\t%s [LST: %10.8f] start"%(status, _t_list[0],
+                                    _t_list[0].sidereal_time('apparent').value))
+                print("\tAZ Alt: %10.8f, %10.8f"%(_az_0, _alt.value))
+                print("\tt_tot: %8.2f s [%8.2f min]"%(obs_tot.to(u.second).value,
+                        obs_tot.to(u.min).value))
+                print("\t%s [LST: %10.8f] finish"%(_t_list[-1],
+                                    _t_list[-1].sidereal_time('apparent').value))
                 if cal is not None:
                     altaz_frame = AltAz(obstime=_t_list[-1], location=location)
                     cal_key = obs_schedul[key][status+"_cal"][1]
@@ -1417,22 +1447,22 @@ def make_obs(obs_az_range, obs_speed, obs_int, obs_schedul, field,
                     cal_time   = obs_schedul[key][status+'_cal_time'] * u.min
 
                 if cal is not None:
-                    print
-                    print "C\t%s [RA Dec: %10.8f, %10.8f]"%(cal_key,
-                                cal_coord.ra.deg, cal_coord.dec.deg)
-                    print " \t%s [AZ Alt: %10.8f, %10.8f]"%(cal_key, cal_az, cal_alt)
-                    print "\tFinish point Sep. %10.8f "%(sep_wgzmax.deg)
+                    print()
+                    print("C\t%s [RA Dec: %10.8f, %10.8f]"%(cal_key,
+                                cal_coord.ra.deg, cal_coord.dec.deg))
+                    print(" \t%s [AZ Alt: %10.8f, %10.8f]"%(cal_key, cal_az, cal_alt))
+                    print("\tFinish point Sep. %10.8f "%(sep_wgzmax.deg))
 
                 ahead_time = (cal_moving + cal_time).to(u.min)
-                print
-                print "\tFinishing time (%3.1f min added)"%ahead_time.value
-                print "\t%s [LST: %10.8f]"%(_t_list[-1] + ahead_time, 
-                        (_t_list[-1] + ahead_time).sidereal_time('apparent').value)
-                print "\t   system setup time %f min \n"%syst_setup.to(u.min).value +\
+                print()
+                print("\tFinishing time (%3.1f min added)"%ahead_time.value)
+                print("\t%s [LST: %10.8f]"%(_t_list[-1] + ahead_time, 
+                        (_t_list[-1] + ahead_time).sidereal_time('apparent').value))
+                print("\t   system setup time %f min \n"%syst_setup.to(u.min).value +\
                       "\t  +calibration time  %f min \n"%cal_time.to(u.min).value +\
-                      "\t  +moving to cal     %f min \n"%cal_moving.to(u.min).value
-                print '-' * 60
-                print
+                      "\t  +moving to cal     %f min \n"%cal_moving.to(u.min).value)
+                print('-' * 60)
+                print()
 
                 #pp = SkyCoord(alt=_alt, az=_az_list, frame='altaz',
                 #         location=location, obstime=_t_list)
@@ -1459,8 +1489,8 @@ def get_az_raster_range(patch, alt_list, obs_location):
 
     for ii, _x in enumerate(az_diff):
         if not np.isfinite(_x):
-            print "Warning: Alt = %3.1f is too high to cover the full Dec range"%\
-            (alt_list[ii] * 180./np.pi)
+            print("Warning: Alt = %3.1f is too high to cover the full Dec range"%\
+            (alt_list[ii] * 180./np.pi))
 
     az_diff *= 180./np.pi
     return az_diff
